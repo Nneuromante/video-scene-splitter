@@ -8,6 +8,7 @@ from scenedetect import detect, ContentDetector
 import zipfile
 from io import BytesIO
 import uuid
+import time
 
 # Colori EVA-01
 EVA_BG = "#3A2A59"  # Viola scuro
@@ -50,10 +51,6 @@ st.markdown(f"""
     .css-1n76uvr, .css-1kyxreq {{
         color: {EVA_FG} !important;
     }}
-    .stTextInput > div > div > input {{
-        background-color: black;
-        color: white;
-    }}
     .stSlider > div {{
         color: {EVA_FG};
     }}
@@ -94,11 +91,22 @@ st.markdown(f"""
     }}
     /* Nascondi elementi inutili */
     #MainMenu, footer {{display: none;}}
-    /* Button accent */
-    .accent-button {{
-        background-color: {EVA_FG} !important;
+    /* Download button */
+    .download-button {{
+        display: block;
+        background-color: {EVA_FG};
         color: {EVA_BG} !important;
-        font-weight: bold !important;
+        text-align: center;
+        padding: 12px;
+        font-weight: bold;
+        border-radius: 5px;
+        margin-top: 20px;
+        font-size: 18px;
+    }}
+    /* Big button */
+    .big-button {{
+        font-size: 24px !important;
+        padding: 15px !important;
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -113,32 +121,27 @@ if 'uploaded_files' not in st.session_state:
     st.session_state.ready_for_download = False
     st.session_state.download_data = None
     st.session_state.processing = False
-    st.session_state.temp_dirs = []
 
 # Sezione video
 st.markdown('<div class="section-header">Video da dividere:</div>', unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    if st.button("Aggiungi Video"):
-        uploaded_files = st.file_uploader("Seleziona uno o più video", 
-                                     accept_multiple_files=True, 
-                                     type=["mp4", "mov", "avi", "mkv"],
-                                     key="uploader_" + str(len(st.session_state.uploaded_files)))
-        if uploaded_files:
-            for file in uploaded_files:
-                if file.name not in st.session_state.file_names:
-                    st.session_state.uploaded_files.append(file)
-                    st.session_state.file_names.append(file.name)
+    uploaded_files = st.file_uploader("Aggiungi Video", 
+                                 accept_multiple_files=True, 
+                                 type=["mp4", "mov", "avi", "mkv"],
+                                 key="uploader")
+    if uploaded_files:
+        for file in uploaded_files:
+            if file.name not in st.session_state.file_names:
+                st.session_state.uploaded_files.append(file)
+                st.session_state.file_names.append(file.name)
 
 with col2:
-    if st.button("Rimuovi Selezionati"):
-        # In una vera app con interfaccia grafica avremmo la selezione
-        # Qui rimuoviamo semplicemente l'ultimo file caricato
-        if st.session_state.uploaded_files:
-            st.session_state.uploaded_files.pop()
-            st.session_state.file_names.pop()
-            st.rerun()
+    if st.button("Rimuovi Tutti"):
+        st.session_state.uploaded_files = []
+        st.session_state.file_names = []
+        st.rerun()
 
 # Lista file
 st.markdown('<div class="file-list">', unsafe_allow_html=True)
@@ -148,11 +151,6 @@ if st.session_state.file_names:
 else:
     st.markdown('<div class="file-item">Nessun file selezionato</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
-
-# Cartella di destinazione
-st.markdown('<div class="section-header">Cartella di base (dove creare la cartella \'Video_Splitted\'):</div>', unsafe_allow_html=True)
-output_path = st.text_input("", value=os.path.expanduser("~/Downloads"), 
-                           label_visibility="collapsed")
 
 # Opzioni
 st.markdown('<div class="section-header">Opzioni:</div>', unsafe_allow_html=True)
@@ -168,49 +166,29 @@ with options_col2:
         chunk_length = st.number_input("Lunghezza segmenti (secondi):", 1, 60, 4)
     output_format = st.selectbox("Formato di output:", ["mp4", "gif"])
 
-# Pulsanti di controllo
-control_col1, control_col2 = st.columns(2)
-
-with control_col1:
-    start_button = st.button("AVVIA", key="avvia_button", disabled=len(st.session_state.uploaded_files) == 0)
-
-with control_col2:
-    stop_button = st.button("INTERROMPI", key="interrompi_button", 
-                           disabled=not st.session_state.processing)
-
-# Barra di progresso
-progress_placeholder = st.empty()
-status_text = st.empty()
-
-# Logica di elaborazione
-if start_button and st.session_state.uploaded_files and not st.session_state.processing:
+# Pulsante AVVIA
+if st.button("AVVIA", key="avvia_button", disabled=len(st.session_state.uploaded_files) == 0 or st.session_state.processing, 
+            help="Clicca per iniziare l'elaborazione"):
     st.session_state.processing = True
     
-    progress_bar = progress_placeholder.progress(0)
-    status_text.text("Inizializzazione...")
+    # Crea una barra di progresso e un testo di stato
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    # Crea cartella di output unica
-    base_dir = output_path
-    output_dir_name = "Video_Splitted"
-    counter = 0
-    output_dir = os.path.join(base_dir, output_dir_name)
-    
-    while os.path.exists(output_dir):
-        counter += 1
-        output_dir = os.path.join(base_dir, f"{output_dir_name}_{counter}")
-    
+    # Crea directory temporanea per l'elaborazione
+    temp_dir = tempfile.mkdtemp()
+    output_dir = os.path.join(temp_dir, "scenes")
     os.makedirs(output_dir, exist_ok=True)
     
     # Processa tutti i video
     all_scene_files = []
+    total_videos = len(st.session_state.uploaded_files)
     
     for file_idx, uploaded_file in enumerate(st.session_state.uploaded_files):
-        file_progress = file_idx / len(st.session_state.uploaded_files)
-        status_text.text(f"Elaborazione video {file_idx+1}/{len(st.session_state.uploaded_files)}: {uploaded_file.name}")
+        file_progress = file_idx / total_videos
+        status_text.text(f"Elaborazione video {file_idx+1}/{total_videos}: {uploaded_file.name}")
         
         # Salva file temporaneamente
-        temp_dir = tempfile.mkdtemp()
-        st.session_state.temp_dirs.append(temp_dir)
         temp_file_path = os.path.join(temp_dir, uploaded_file.name)
         
         with open(temp_file_path, "wb") as temp_file:
@@ -219,7 +197,7 @@ if start_button and st.session_state.uploaded_files and not st.session_state.pro
         try:
             if split_method == "scene":
                 # Rilevamento scene
-                progress_bar.progress(file_progress * 100 + 10/len(st.session_state.uploaded_files))
+                progress_bar.progress(file_progress * 100 + 5/total_videos)
                 scenes = detect(temp_file_path, ContentDetector(threshold=threshold))
                 
                 if scenes:
@@ -227,7 +205,7 @@ if start_button and st.session_state.uploaded_files and not st.session_state.pro
                     
                     # Elabora ogni scena
                     for idx, (start, end) in enumerate(scenes, start=1):
-                        scene_progress = file_progress * 100 + (10 + (idx/len(scenes) * 80))/len(st.session_state.uploaded_files)
+                        scene_progress = file_progress * 100 + (5 + (idx/len(scenes) * 85))/total_videos
                         progress_bar.progress(min(scene_progress, 100))
                         
                         # Prepara nome file di output
@@ -266,8 +244,9 @@ if start_button and st.session_state.uploaded_files and not st.session_state.pro
                         try:
                             subprocess.run(command, check=True, capture_output=True)
                             all_scene_files.append(output_file)
+                            status_text.text(f"Creata scena {idx} di {len(scenes)} per il video {file_idx+1}/{total_videos}")
                         except subprocess.CalledProcessError as e:
-                            st.error(f"Errore durante l'elaborazione: {str(e)}")
+                            st.error(f"Errore durante la creazione della scena {idx}: {str(e)}")
             else:
                 # Divisione a tempo fisso
                 # Get video duration
@@ -285,10 +264,11 @@ if start_button and st.session_state.uploaded_files and not st.session_state.pro
                     base_name = os.path.splitext(os.path.basename(temp_file_path))[0]
                     start_time = 0.0
                     segment_index = 1
+                    num_segments = int(total_duration / float(chunk_length)) + 1
                     
                     while start_time < total_duration:
                         segment_duration = min(float(chunk_length), total_duration - start_time)
-                        segment_progress = file_progress * 100 + (start_time / total_duration * 90) / len(st.session_state.uploaded_files)
+                        segment_progress = file_progress * 100 + (segment_index / num_segments * 90) / total_videos
                         progress_bar.progress(min(segment_progress, 100))
                         
                         # Prepara nome file di output
@@ -327,8 +307,9 @@ if start_button and st.session_state.uploaded_files and not st.session_state.pro
                         try:
                             subprocess.run(command, check=True, capture_output=True)
                             all_scene_files.append(output_file)
+                            status_text.text(f"Creato segmento {segment_index} di {num_segments} per il video {file_idx+1}/{total_videos}")
                         except subprocess.CalledProcessError as e:
-                            st.error(f"Errore durante l'elaborazione: {str(e)}")
+                            st.error(f"Errore durante la creazione del segmento {segment_index}: {str(e)}")
                         
                         start_time += segment_duration
                         segment_index += 1
@@ -339,17 +320,43 @@ if start_button and st.session_state.uploaded_files and not st.session_state.pro
         except Exception as e:
             st.error(f"Errore nell'elaborazione di {uploaded_file.name}: {str(e)}")
     
+    # Crea ZIP con tutte le scene
+    if all_scene_files:
+        status_text.text("Preparazione file di download...")
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+            for scene_path in all_scene_files:
+                zip_file.write(scene_path, os.path.basename(scene_path))
+        
+        # Salva per il download
+        st.session_state.download_data = zip_buffer.getvalue()
+        st.session_state.ready_for_download = True
+    
     # Completa la barra di progresso
     progress_bar.progress(100)
-    status_text.text(f"Elaborazione completata! {len(all_scene_files)} scene create in: {output_dir}")
+    status_text.text(f"Elaborazione completata! {len(all_scene_files)} scene create.")
     
-    st.session_state.processing = False
-    st.success(f"Tutti i video sono stati elaborati! Le scene sono disponibili in: {output_dir}")
-
-# Pulizia directory temporanee
-for temp_dir in st.session_state.temp_dirs:
+    # Pulizia
     try:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
     except:
         pass
+    
+    st.session_state.processing = False
+    st.rerun()
+
+# Sezione download
+if st.session_state.ready_for_download and st.session_state.download_data:
+    st.markdown("---")
+    st.markdown('<div class="section-header">Download:</div>', unsafe_allow_html=True)
+    
+    zip_size = len(st.session_state.download_data) / (1024*1024)  # Size in MB
+    
+    download_button = st.download_button(
+        label=f"DOWNLOAD SCENE ({zip_size:.1f} MB)",
+        data=st.session_state.download_data,
+        file_name=f"scene_splittate_{uuid.uuid4().hex[:6]}.zip",
+        mime="application/zip",
+        key="download_button",
+        help="Scarica tutte le scene in un unico file ZIP"
+    )
