@@ -1,4 +1,4 @@
 streamlit
 opencv-python-headless
-scenedetect
-moviepy
+scenedetect==0.6.6
+moviepy==2.0.0
