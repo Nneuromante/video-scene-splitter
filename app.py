@@ -7,7 +7,8 @@ from scenedetect import VideoManager, SceneManager, StatsManager
 from scenedetect.detectors import ContentDetector
 import zipfile
 from io import BytesIO
-from moviepy.editor import VideoFileClip
+# Cambiare questa importazione
+from moviepy.video.io.VideoFileClip import VideoFileClip
 
 # Set page title
 st.set_page_config(page_title="Video Scene Splitter", layout="wide")
