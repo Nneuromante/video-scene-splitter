@@ -2,13 +2,12 @@ import streamlit as st
 import cv2
 import tempfile
 import os
+import subprocess
 import shutil
 from scenedetect import VideoManager, SceneManager, StatsManager
 from scenedetect.detectors import ContentDetector
 import zipfile
 from io import BytesIO
-# Cambiare questa importazione
-from moviepy.video.io.VideoFileClip import VideoFileClip
 
 # Set page title
 st.set_page_config(page_title="Video Scene Splitter", layout="wide")
@@ -41,7 +40,7 @@ if uploaded_file is not None:
     os.makedirs(output_dir, exist_ok=True)
     
     # Detect scenes
-    status_text.text("Analyzing video for scene changes...")
+    status_text.text("Detecting scenes...")
     progress_bar.progress(10)
     
     try:
@@ -62,82 +61,108 @@ if uploaded_file is not None:
         
         # Get scene list
         scene_list = scene_manager.get_scene_list(base_timecode)
+        progress_bar.progress(40)
         
-        if not scene_list:
-            st.warning("No scene changes detected. Try lowering the threshold.")
-        else:
-            progress_bar.progress(40)
+        # Use ffmpeg to split video
+        status_text.text("Splitting video into scenes...")
+        scene_files = []
+        
+        # Get video info
+        cap = cv2.VideoCapture(temp_file_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 25  # Default fallback if fps can't be determined
+        cap.release()
+        
+        # Process each scene
+        for i, scene in enumerate(scene_list):
+            progress_value = 40 + int((i / len(scene_list)) * 50)
+            progress_bar.progress(progress_value)
             
-            # Split video using MoviePy
-            status_text.text("Splitting video into scenes...")
+            start_time = scene[0].get_seconds()
+            end_time = scene[1].get_seconds()
+            duration = end_time - start_time
             
-            scene_files = []
-            # Load the video file
-            video = VideoFileClip(temp_file_path)
+            output_file = os.path.join(output_dir, f"scene_{i+1}.mp4")
             
-            # Process each scene
-            for i, scene in enumerate(scene_list):
-                progress_value = 40 + int((i / len(scene_list)) * 50)
-                progress_bar.progress(progress_value)
-                
-                start_time = scene[0].get_seconds()
-                end_time = scene[1].get_seconds()
-                
-                # Extract the scene
-                scene_clip = video.subclip(start_time, end_time)
-                output_file = os.path.join(output_dir, f"scene_{i+1}.mp4")
-                
-                # Write the scene to a file
-                scene_clip.write_videofile(output_file, codec='libx264', audio_codec='aac', 
-                                         verbose=False, logger=None)
+            # Use ffmpeg to extract the scene
+            cmd = [
+                "ffmpeg",
+                "-i", temp_file_path, 
+                "-ss", str(start_time), 
+                "-t", str(duration),
+                "-c:v", "copy", 
+                "-c:a", "copy", 
+                "-y",  # Overwrite output files without asking
+                output_file
+            ]
+            
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
                 scene_files.append(output_file)
                 status_text.text(f"Processed scene {i+1} of {len(scene_list)}")
+            except subprocess.CalledProcessError as e:
+                st.error(f"Error processing scene {i+1}: {str(e)}")
+                st.error(f"Command output: {e.stdout.decode() if e.stdout else ''}")
+                st.error(f"Command error: {e.stderr.decode() if e.stderr else ''}")
+        
+        # Complete progress
+        progress_bar.progress(100)
+        status_text.text("Processing complete!")
+        
+        # Display number of detected scenes
+        st.success(f"Detected {len(scene_files)} scenes")
+        
+        # Display and allow downloading of scenes
+        if scene_files:
+            st.subheader("Scene Previews:")
             
-            # Close the video file
-            video.close()
+            for i, scene_path in enumerate(scene_files):
+                with st.expander(f"Scene {i+1}"):
+                    st.video(scene_path)
+                    with open(scene_path, "rb") as file:
+                        scene_data = file.read()
+                        st.download_button(
+                            label=f"Download Scene {i+1} ({os.path.getsize(scene_path) / (1024*1024):.1f} MB)",
+                            data=scene_data,
+                            file_name=f"scene_{i+1}.mp4",
+                            mime="video/mp4",
+                            key=f"download_{i}"
+                        )
             
-            # Complete progress
-            progress_bar.progress(100)
-            status_text.text("Processing complete!")
-            
-            # Display number of detected scenes
-            st.success(f"Detected and split {len(scene_files)} scenes")
-            
-            # Display and allow downloading of scenes
-            if scene_files:
-                st.subheader("Scene Previews:")
-                
+            # Create a ZIP with all scenes
+            st.subheader("Download all scenes:")
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zip_file:
                 for i, scene_path in enumerate(scene_files):
-                    with st.expander(f"Scene {i+1}"):
-                        st.video(scene_path)
-                        with open(scene_path, "rb") as file:
-                            scene_data = file.read()
-                            st.download_button(
-                                label=f"Download Scene {i+1} ({os.path.getsize(scene_path) / (1024*1024):.1f} MB)",
-                                data=scene_data,
-                                file_name=f"scene_{i+1}.mp4",
-                                mime="video/mp4",
-                                key=f"download_{i}"
-                            )
-                
-                # Create a ZIP with all scenes
-                st.subheader("Download all scenes:")
-                zip_buffer = BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-                    for i, scene_path in enumerate(scene_files):
-                        zip_file.write(scene_path, f"scene_{i+1}.mp4")
-                
-                zip_size = len(zip_buffer.getvalue()) / (1024*1024)  # Size in MB
-                st.download_button(
-                    label=f"Download All Scenes as ZIP ({zip_size:.1f} MB)",
-                    data=zip_buffer.getvalue(),
-                    file_name="all_scenes.zip",
-                    mime="application/zip"
-                )
+                    zip_file.write(scene_path, f"scene_{i+1}.mp4")
             
+            zip_size = len(zip_buffer.getvalue()) / (1024*1024)  # Size in MB
+            st.download_button(
+                label=f"Download All Scenes as ZIP ({zip_size:.1f} MB)",
+                data=zip_buffer.getvalue(),
+                file_name="all_scenes.zip",
+                mime="application/zip"
+            )
+        
+        # Also display scene time information
+        if scene_list:
+            st.subheader("Scene Timecodes:")
+            scene_data = []
+            for i, scene in enumerate(scene_list):
+                start_time = scene[0].get_seconds()
+                end_time = scene[1].get_seconds()
+                scene_data.append({
+                    "Scene": i+1,
+                    "Start Time": f"{int(start_time//60):02d}:{int(start_time%60):02d}",
+                    "End Time": f"{int(end_time//60):02d}:{int(end_time%60):02d}",
+                    "Duration": f"{int((end_time-start_time)//60):02d}:{int((end_time-start_time)%60):02d}"
+                })
+            
+            st.table(scene_data)
+    
     except Exception as e:
         st.error(f"Error during processing: {str(e)}")
-        st.error("Full error: " + str(e))
     
     # Clean up temporary files
     shutil.rmtree(temp_dir)
