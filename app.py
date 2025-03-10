@@ -22,7 +22,7 @@ if 'uploaded_videos' not in st.session_state:
     st.session_state.video_names = []
     st.session_state.processing = False
 
-# File uploader
+# File uploader with immediate display of uploaded files
 uploaded_files = st.file_uploader("Upload videos", 
                               type=["mp4", "mov", "avi", "mkv"], 
                               accept_multiple_files=True)
@@ -35,26 +35,20 @@ if uploaded_files:
             st.session_state.uploaded_videos.append(file)
             st.session_state.video_names.append(file.name)
 
-# Display list of uploaded videos
+# Display list of uploaded files with X to remove
 if st.session_state.uploaded_videos:
-    st.subheader("Uploaded Videos:")
+    st.write("Uploaded Videos:")
     
-    # Create columns for videos list and remove button
-    for i, video_name in enumerate(st.session_state.video_names):
-        col1, col2 = st.columns([5, 1])
+    for i, video_file in enumerate(st.session_state.uploaded_videos):
+        col1, col2 = st.columns([20, 1])
         with col1:
-            st.write(f"{i+1}. {video_name}")
+            file_size_mb = len(video_file.getvalue()) / (1024 * 1024)
+            st.text(f"{video_file.name}  {file_size_mb:.1f}MB")
         with col2:
-            if st.button("Remove", key=f"remove_{i}"):
+            if st.button("❌", key=f"x_{i}", help="Remove this video"):
                 st.session_state.uploaded_videos.pop(i)
                 st.session_state.video_names.pop(i)
                 st.rerun()
-    
-    # Option to clear all videos
-    if st.button("Clear All"):
-        st.session_state.uploaded_videos = []
-        st.session_state.video_names = []
-        st.rerun()
 
 # Advanced options
 with st.expander("Advanced Options"):
@@ -85,7 +79,8 @@ if process_button:
     
     # Process each video
     for video_idx, video_file in enumerate(st.session_state.uploaded_videos):
-        video_progress_base = video_idx / total_videos * 100
+        # Calculate base progress percentage for this video (0-1 scale)
+        video_progress_base = video_idx / total_videos
         status_text.text(f"Processing video {video_idx+1}/{total_videos}: {video_file.name}")
         
         # Save file temporarily
@@ -96,14 +91,15 @@ if process_button:
         try:
             # Detect scenes
             status_text.text(f"Detecting scenes in {video_file.name}...")
-            progress_bar.progress(video_progress_base + 5)
+            progress_bar.progress(video_progress_base + 0.05/total_videos)  # Small increment
             
             scenes = detect(temp_file_path, ContentDetector(threshold=threshold))
             
             if not scenes:
                 st.warning(f"No scene changes detected in {video_file.name}. Try lowering the threshold value.")
+                progress_bar.progress(video_progress_base + 0.9/total_videos)  # Move almost to the next video
             else:
-                progress_bar.progress(video_progress_base + 10)
+                progress_bar.progress(video_progress_base + 0.1/total_videos)  # 10% progress for this video
                 
                 # Use ffmpeg to split video
                 status_text.text(f"Splitting {video_file.name} into scenes...")
@@ -112,14 +108,18 @@ if process_button:
                 
                 # Process each scene
                 for idx, (start, end) in enumerate(scenes, start=1):
-                    scene_progress = video_progress_base + 10 + (idx / len(scenes) * 80 / total_videos)
-                    progress_bar.progress(min(int(scene_progress), 100))
+                    # Calculate the progress within this video's portion
+                    scene_portion = 0.8 / total_videos  # 80% of this video's portion for scene processing
+                    scene_progress = (idx / len(scenes)) * scene_portion
+                    current_progress = min(video_progress_base + 0.1/total_videos + scene_progress, 1.0)
+                    progress_bar.progress(current_progress)
                     
-                    # Prepare output filename
+                    # Prepare output filename - sanitize base_name to remove problematic characters
+                    safe_base_name = "".join(c if c.isalnum() or c in ['-', '_'] else '_' for c in base_name)
                     if output_format == "gif":
-                        output_file = os.path.join(output_dir, f"{base_name}_scene{idx}.gif")
+                        output_file = os.path.join(output_dir, f"{safe_base_name}_scene{idx}.gif")
                     else:
-                        output_file = os.path.join(output_dir, f"{base_name}_scene{idx}.mp4")
+                        output_file = os.path.join(output_dir, f"{safe_base_name}_scene{idx}.mp4")
                     
                     # Prepare ffmpeg command
                     command = [
@@ -161,8 +161,8 @@ if process_button:
                     except subprocess.CalledProcessError as e:
                         st.error(f"Error processing scene {idx} of {video_file.name}: {str(e)}")
                 
-                # Update progress for this video
-                progress_bar.progress(video_progress_base + 90/total_videos)
+                # Update progress to the end of this video's portion
+                progress_bar.progress(min((video_idx + 1) / total_videos, 1.0))
                 
                 # Display summary for this video
                 st.info(f"Successfully processed {len(video_scene_files)} out of {len(scenes)} scenes from {video_file.name}")
@@ -171,7 +171,7 @@ if process_button:
             st.error(f"Error processing {video_file.name}: {str(e)}")
     
     # Complete progress
-    progress_bar.progress(100)
+    progress_bar.progress(1.0)
     status_text.text("Processing complete!")
     
     # Create a ZIP with all scenes from all videos
